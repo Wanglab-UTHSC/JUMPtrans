@@ -1,0 +1,97 @@
+# ============================
+# JUMPTrans hierarchical v26 config (EN only)
+# You only need to edit the values on the right.
+# ============================
+
+meta:
+  project: "JUMPTrans"
+  version: "2.7.0"
+  description: "Two-stage hierarchical family -> kinase classification."
+
+run:
+  random_seed: 42            # Global random seed. Change to regenerate train/test split.
+  mode: "predict"              # "train" for training/validation, "predict" for raw-data kinase prediction.
+
+# training
+paths:
+  dataset_csv: "dataset/new_dataset_with_sequence_all(with_STY).csv"      # Input dataset with sequences and sites.
+  family_map_csv: "dataset/PhosphositePlus_with_family_labeled.csv"       # Mapping from kinase gene to family.
+  outdir: "outputs_v26/esm2_t12_35M_F1_V2"       # Root output directory; will be created if missing.
+  cache_dir: "cache_v26"      # Directory for caching ESM embeddings.
+
+split:
+  test_size: 0.2             # Fraction of cleaned data used as held-out test set; 0.1~0.3 recommended.
+  top_k_families: 10         # Number of most frequent families kept as explicit labels; others merged into "Others".
+
+model:
+  backbone: "esm2_t12_35M_UR50D"      # Sequence encoder. Choices:
+    #   "aa_onehot" -> simple 20+1 AA one-hot over each window.
+    #   Any esm.pretrained model name, for example:
+    #     "esm2_t12_35M_UR50D"
+    #     "esm2_t30_150M_UR50D"
+    #     "esm2_t33_650M_UR50D"  (recommended first ESM test)
+    #     "esm2_t36_3B_UR50D"
+    #     "esm2_t48_15B_UR50D"
+  #   The string must match a function in esm.pretrained, e.g.
+  #   esm.pretrained.esm2_t33_650M_UR50D().
+  windows: [ 51, 33, 15 ]      # List of integer window lengths centered at the site; odd numbers recommended.
+  esm_repr_mode: "token"        # "pooled" or "token"
+  esm_cache_dtype: "float16"    # "float16" or "float32"
+
+stage1_family:
+  epochs: 100                 # Number of epochs for family classifier; 20~40 typical.
+  channels: 256              # Base Conv1D channels per branch; increase for larger models.
+  dropout: 0.3               # Dropout in towers and dense layers; 0.2~0.5.
+  lr: 0.0002                 # Learning rate for Adam in stage 1.
+  batch_size: 128            # Training batch size; tune with GPU memory.
+  oversampler: "smote"       # "none" or "smote". SMOTE helps when some families are very small.
+  use_class_weight: true     # If true, build class_weight for family loss to reduce imbalance.
+
+stage2_kinase:
+  epochs: 70                 # Number of epochs for each per-family kinase expert.
+  channels: 256              # Base Conv1D channels per branch for kinase experts.
+  dropout: 0.3               # Dropout in towers and dense layers.
+  lr: 0.0002                 # Learning rate for Adam in stage 2.
+  batch_size: 128            # Training batch size for kinase experts.
+  oversampler: "smote"       # "none" or "smote". SMOTE is usually recommended.
+  use_class_weight: true     # If true, build class_weight for kinase loss.
+
+negatives:
+  mode: "fixed"              # How to choose cross-family negative ratio: "fixed", "linear", or "sqrt".
+  fixed_ratio: 0.2           # Used if mode == "fixed". Recommended: 0.1~0.5
+  min_ratio: 0.1             # Lower bound for dynamic modes.
+  max_ratio: 0.5             # Upper bound for dynamic modes.
+
+gating:
+  topk_family: 3             # Use top-k family predictions as gate for stage 2; 1~5 typical.
+  soft_gate: true            # If true, weight kinase probabilities by family probability; if false, use hard top-k only.
+
+eval:
+  enable_family_test_eval: true      # If false, skip family-level test evaluation outputs.
+  enable_global_kinase_eval: true    # If false, skip global kinase-level evaluation.
+  enable_per_family_heatmap: true    # If false, skip per-family kinase confusion heatmaps.
+  save_run_log: true                 # If false, do not write run_log.txt.
+
+# Prediction
+predict:
+  raw_input_excel: "dataset/smallsample.csv"
+  #   sequence_lookup_csv: "dataset/new_dataset_with_sequence_all(with_STY).csv"
+  sequence_lookup_tsvs:
+    - "dataset/uniprot2/All_reviewed.tsv"
+    - "dataset/uniprot2/human/human_unreviewed.tsv"
+    - "dataset/uniprot2/mouse/mouse_unreviewed.tsv"
+    - "dataset/uniprot2/rat/rat_unreviewed.tsv"
+  output_csv: "outputs_test_multi/raw_predict_kinase.csv"
+
+# 1. Set Family threshold to 0 (or a very low value), relying on TopK
+  family_threshold_mode: auto_f1  # Temporarily disable auto_f1
+  family_threshold: 0.0          # Set to 0 to let all families within TopK pass
+
+  # 2. Set Kinase threshold to 0 as well, relying on TopK
+  kinase_threshold_mode: auto_f1   # Temporarily disable auto_f1
+  kinase_threshold: 0.0          # Set to 0 to keep all TopK kinases
+
+  # 3. Rely on TopK to control the number of outputs and prevent overly large result files
+  topk_family: 3                 # Select top 3 Families per p-site (recommended, can be increased if needed)
+  topk_kinase_per_family: 5      # Select top 5 Kinases within each Family
+  max_candidates_total: 15       # (Optional) Limit to a maximum of 15 candidates per p-site
